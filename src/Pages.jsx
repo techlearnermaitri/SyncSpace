@@ -218,14 +218,23 @@ export function Tasks({ tasks, projects, projectFilter, setProjectFilter, onMove
 export function Team({ tasks }) {
   return (
     <>
-      <div className="team-summary"><div className="team-summary-icon"><Users size={21} /></div><div><h2>A small team can do big things.</h2><p>See who’s contributing across the workspace.</p></div><span className="team-count">{members.length} demo members</span></div>
+      <div className="team-summary">
+        <div className="team-summary-icon"><Users size={21} /></div>
+        <div>
+          <h2>Build your team.</h2>
+          <p>Team members will appear here when shared workspace invitations are connected.</p>
+        </div>
+        <span className="team-count">No members added</span>
+      </div>
       <div className="team-grid">
-        {members.map(member => {
-          const own = tasks.filter(t => t.assignee === member.name.split(' ')[0]);
-          const complete = own.filter(t => t.status === 'done').length;
-          return <div className="team-card" key={member.initials}><div className="team-card-top"><div className="avatar avatar-large" style={{ background: member.color }}>{member.initials}</div><span className="member-online"><i /> Demo member</span></div><h3>{member.name}</h3><p>{member.role}</p><div className="member-stats"><div><b>{own.length}</b><span>Assigned</span></div><div><b>{complete}</b><span>Completed</span></div><div><b>{own.length ? Math.round(complete / own.length * 100) : 0}%</b><span>Progress</span></div></div><div className="progress-track"><div className="progress-fill" style={{ width: `${own.length ? complete / own.length * 100 : 0}%` }} /></div></div>;
-        })}
-        <div className="invite-card"><span><Users size={21} /></span><b>Team collaboration</b><small>These are demo members. Real invitations and shared access require membership records and Firestore security rules.</small></div>
+        <div className="invite-card">
+          <span><Users size={21} /></span>
+          <b>Team collaboration</b>
+          <small>
+            This workspace is ready for team features. Member profiles and shared access
+            will appear here when real membership records are available.
+          </small>
+        </div>
       </div>
     </>
   );
