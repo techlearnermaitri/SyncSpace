@@ -292,9 +292,25 @@ export function DeadlineIntelligence({
   };
 
   const recommendation = analysis => {
-    const value = analysis?.recommendation ?? analysis?.recommendations ?? analysis?.suggestion ?? analysis?.action ?? analysis?.nextStep ?? analysis?.next_step;
+    const value =
+      analysis?.recommendation ??
+      analysis?.recommendations ??
+      analysis?.suggestion ??
+      analysis?.action ??
+      analysis?.nextStep ??
+      analysis?.next_step;
+
     if (Array.isArray(value)) return value.filter(Boolean).join(' ');
-    return typeof value === 'string' && value.trim() ? value : 'No recommendation returned for this task.';
+    if (typeof value === 'string' && value.trim()) return value;
+
+    const overall = report?.recommendations;
+    if (Array.isArray(overall) && overall.length) return overall.join(' ');
+
+    if (String(analysis?.risk ?? '').toLowerCase() === 'overdue') {
+      return 'Prioritize this overdue task and update its deadline.';
+    }
+
+    return 'Review this task and confirm its deadline.';
   };
 
   const scoreKeys = ['overallRiskScore', 'overall_risk_score', 'overallRisk', 'overall_risk', 'riskScore', 'risk_score', 'score', 'totalRiskScore', 'total_risk_score'];
