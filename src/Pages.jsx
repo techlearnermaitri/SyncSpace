@@ -215,27 +215,171 @@ export function Tasks({ tasks, projects, projectFilter, setProjectFilter, onMove
   );
 }
 
-export function Team({ tasks }) {
+export function Team({
+  tasks,
+  user,
+  workspaceId,
+  workspaceMembers = [],
+  inviteCodeDisplay,
+  busy,
+  onCreateInvite,
+  onAcceptInvite,
+  onLeaveWorkspace,
+  onDeleteWorkspace
+}) {
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
+
+  const isOwner = workspaceMembers.some(
+    member => member.id === user.uid && member.role === 'owner'
+  );
+
   return (
     <>
       <div className="team-summary">
         <div className="team-summary-icon"><Users size={21} /></div>
         <div>
-          <h2>Build your team.</h2>
-          <p>Team members will appear here when shared workspace invitations are connected.</p>
+          <h2>Workspace team</h2>
+          <p>Members with access to this shared workspace.</p>
         </div>
-        <span className="team-count">No members added</span>
+        <span className="team-count">
+          {workspaceMembers.length} {workspaceMembers.length === 1 ? 'member' : 'members'}
+        </span>
       </div>
+
       <div className="team-grid">
-        <div className="invite-card">
-          <span><Users size={21} /></span>
-          <b>Team collaboration</b>
-          <small>
-            This workspace is ready for team features. Member profiles and shared access
-            will appear here when real membership records are available.
-          </small>
-        </div>
+        {workspaceMembers.map(member => (
+          <div className="invite-card" key={member.id}>
+            <span><Users size={21} /></span>
+            <b>{member.displayName || member.email || 'Workspace member'}</b>
+            <small>{member.email || 'No email available'}</small>
+            <small>{member.role === 'owner' ? 'Workspace owner' : 'Member'}</small>
+          </div>
+        ))}
+        {!workspaceMembers.length && (
+          <div className="invite-card">
+            <span><Users size={21} /></span>
+            <b>Loading team members</b>
+            <small>Members appear here after their workspace membership is verified.</small>
+          </div>
+        )}
       </div>
+
+      {isOwner && (
+        <section className="panel" style={{ marginTop: 20, padding: 22 }}>
+          <div className="panel-heading">
+            <div>
+              <h2>Invite a teammate</h2>
+              <p>Generate a one-time code for a specific email address.</p>
+            </div>
+          </div>
+          <form
+            onSubmit={event => {
+              event.preventDefault();
+              onCreateInvite(inviteEmail);
+            }}
+            style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}
+          >
+            <input
+              type="email"
+              required
+              value={inviteEmail}
+              onChange={event => setInviteEmail(event.target.value)}
+              placeholder="teammate@example.com"
+              aria-label="Teammate email"
+              style={{ flex: '1 1 240px', minWidth: 0, padding: 12, border: '1px solid var(--border)', borderRadius: 9 }}
+            />
+            <button className="button button-primary" type="submit" disabled={busy}>
+              {busy ? 'Please wait…' : 'Generate invite code'}
+            </button>
+          </form>
+
+          {inviteCodeDisplay && (
+            <div style={{ marginTop: 16 }}>
+              <p>Share this code only with the invited email address:</p>
+              <code style={{ fontSize: 18, letterSpacing: 2 }}>{inviteCodeDisplay}</code>
+              <button
+                className="button"
+                type="button"
+                style={{ marginLeft: 12 }}
+                onClick={() => {
+                  navigator.clipboard?.writeText(inviteCodeDisplay)
+                    .then(() => window.alert('Invitation code copied.'))
+                    .catch(() => window.alert(`Copy this invitation code: ${inviteCodeDisplay}`));
+                }}
+              >
+                Copy code
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      <section className="panel" style={{ marginTop: 20, padding: 22 }}>
+        <div className="panel-heading">
+          <div>
+            <h2>Accept an invitation</h2>
+            <p>Sign in using the email address the invitation was created for.</p>
+          </div>
+        </div>
+        <form
+          onSubmit={event => {
+            event.preventDefault();
+            onAcceptInvite(inviteCode);
+          }}
+          style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}
+        >
+          <input
+            value={inviteCode}
+            onChange={event => setInviteCode(event.target.value.toUpperCase())}
+            maxLength={10}
+            minLength={10}
+            required
+            placeholder="10-character code"
+            aria-label="Invitation code"
+            style={{ flex: '1 1 200px', minWidth: 0, padding: 12, border: '1px solid var(--border)', borderRadius: 9 }}
+          />
+          <button className="button button-primary" type="submit" disabled={busy}>
+            {busy ? 'Please wait…' : 'Join workspace'}
+          </button>
+        </form>
+      </section>
+
+      {workspaceId !== user.uid && (
+        <section className="panel" style={{ marginTop: 20, padding: 22 }}>
+          <div className="panel-heading">
+            <div>
+              <h2>Workspace settings</h2>
+              <p>
+                {isOwner
+                  ? 'You own this shared workspace.'
+                  : 'Leave this shared workspace to return to your personal workspace.'}
+              </p>
+            </div>
+          </div>
+          {isOwner ? (
+            <button
+              className="button"
+              type="button"
+              disabled={busy}
+              onClick={onDeleteWorkspace}
+              style={{ color: '#dc2626', border: '1px solid #dc2626' }}
+            >
+              {busy ? 'Please wait…' : 'Delete shared workspace'}
+            </button>
+          ) : (
+            <button
+              className="button"
+              type="button"
+              disabled={busy}
+              onClick={onLeaveWorkspace}
+            >
+              {busy ? 'Please wait…' : 'Leave workspace'}
+            </button>
+          )}
+        </section>
+      )}
+
     </>
   );
 }

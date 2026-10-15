@@ -2,7 +2,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth, db } from './firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import {
+  collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where, writeBatch
+} from 'firebase/firestore';
 import AuthScreen from './AuthScreen';
 import {
   Activity, ArrowUpRight, Bell, Check, ChevronDown, CircleCheckBig,
@@ -89,6 +91,13 @@ function Dashboard({ user }) {
   const [toast, setToast] = useState('');
   const [toastError, setToastError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [workspaceId, setWorkspaceId] = useState(
+    () => readLocal(user.uid, 'workspaceId', user.uid)
+  );
+  const [workspaceMembers, setWorkspaceMembers] = useState([]);
+  const [inviteCodeDisplay, setInviteCodeDisplay] = useState('');
+  const [teamBusy, setTeamBusy] = useState(false);
+
 
   const [newTask, setNewTask] = useState({
     title: '',
@@ -137,76 +146,329 @@ function Dashboard({ user }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // Load only the currently authenticated user's Firestore document.
+  // Load the active workspace. Keep the old personal document intact.
+  useEffect(() => {
+    let cancelled = false;
 
-useEffect(() => {
-  let cancelled = false;
+    async function loadWorkspace() {
+      setCloudReady(false);
+      setCloudStatus('Connecting');
 
-  async function loadWorkspace() {
-    setCloudReady(false);
-    setCloudStatus('Connecting');
+      try {
+        let activeId = workspaceId || user.uid;
 
-    try {
-      const ref = doc(db, 'users', user.uid, 'workspace', 'data');
-      const snapshot = await getDoc(ref);
+        if (activeId === user.uid) {
+          // Preserve existing personal data while initializing the shared workspace.
+          const personalRef = doc(db, 'users', user.uid, 'workspace', 'data');
+          const personalSnapshot = await getDoc(personalRef);
+          const personalData = personalSnapshot.exists()
+            ? personalSnapshot.data()
+            : { projects: [], tasks: [], activity: [] };
 
-      if (cancelled) return;
+          const workspaceRef = doc(db, 'workspaces', user.uid);
+          await setDoc(workspaceRef, {
+            ownerId: user.uid,
+            name: user.displayName
+              ? `${user.displayName}'s workspace`
+              : 'My workspace',
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
 
-      // Existing accounts keep their saved data.
-      // A new account starts with an empty workspace.
-      const data = snapshot.exists() ? snapshot.data() : {};
+          await setDoc(
+            doc(db, 'workspaces', user.uid, 'members', user.uid),
+            {
+              uid: user.uid,
+              email: (user.email || '').toLowerCase(),
+              displayName: user.displayName || user.email || 'Workspace owner',
+              role: 'owner',
+              joinedAt: new Date().toISOString()
+            },
+            { merge: true }
+          );
+        }
 
-      const nextProjects = Array.isArray(data.projects) ? data.projects : [];
-      const nextTasks = Array.isArray(data.tasks) ? data.tasks : [];
-      const nextActivity = Array.isArray(data.activity) ? data.activity : [];
+        const memberRef = doc(db, 'workspaces', activeId, 'members', user.uid);
+        const memberSnapshot = await getDoc(memberRef);
 
-      setProjects(nextProjects);
-      setTasks(nextTasks);
-      setActivity(nextActivity);
+        if (!memberSnapshot.exists()) {
+          if (activeId !== user.uid) {
+            activeId = user.uid;
+            localStorage.setItem(
+              localKey(user.uid, 'workspaceId'),
+              JSON.stringify(activeId)
+            );
+            if (!cancelled) setWorkspaceId(activeId);
+            return;
+          }
+          throw new Error('Your workspace membership could not be initialized.');
+        }
 
-      localStorage.setItem(
-        localKey(user.uid, 'projects'),
-        JSON.stringify(nextProjects)
-      );
-      localStorage.setItem(
-        localKey(user.uid, 'tasks'),
-        JSON.stringify(nextTasks)
-      );
-      localStorage.setItem(
-        localKey(user.uid, 'activity'),
-        JSON.stringify(nextActivity)
-      );
+        const sharedRef = doc(db, 'workspaces', activeId, 'data', 'main');
+        const sharedSnapshot = await getDoc(sharedRef);
 
-      // Create the empty Firestore workspace if it doesn't exist.
-      if (!snapshot.exists()) {
-        await setDoc(ref, {
-          projects: [],
-          tasks: [],
-          activity: [],
-          updatedAt: new Date().toISOString()
-        });
+        if (!sharedSnapshot.exists() && activeId === user.uid) {
+          const personalRef = doc(db, 'users', user.uid, 'workspace', 'data');
+          const personalSnapshot = await getDoc(personalRef);
+          const data = personalSnapshot.exists()
+            ? personalSnapshot.data()
+            : { projects: [], tasks: [], activity: [] };
+
+          await setDoc(sharedRef, {
+            projects: Array.isArray(data.projects) ? data.projects : [],
+            tasks: Array.isArray(data.tasks) ? data.tasks : [],
+            activity: Array.isArray(data.activity) ? data.activity : [],
+            updatedAt: new Date().toISOString()
+          });
+        }
+
+        const finalSnapshot = sharedSnapshot.exists()
+          ? sharedSnapshot
+          : await getDoc(sharedRef);
+
+        if (cancelled) return;
+
+        const data = finalSnapshot.exists() ? finalSnapshot.data() : {};
+        const nextProjects = Array.isArray(data.projects) ? data.projects : [];
+        const nextTasks = Array.isArray(data.tasks) ? data.tasks : [];
+        const nextActivity = Array.isArray(data.activity) ? data.activity : [];
+
+        setProjects(nextProjects);
+        setTasks(nextTasks);
+        setActivity(nextActivity);
+
+        localStorage.setItem(localKey(user.uid, 'projects'), JSON.stringify(nextProjects));
+        localStorage.setItem(localKey(user.uid, 'tasks'), JSON.stringify(nextTasks));
+        localStorage.setItem(localKey(user.uid, 'activity'), JSON.stringify(nextActivity));
+        localStorage.setItem(localKey(user.uid, 'workspaceId'), JSON.stringify(activeId));
+
+        const membersSnapshot = await getDocs(
+          collection(db, 'workspaces', activeId, 'members')
+        );
+
+        if (!cancelled) {
+          setWorkspaceId(activeId);
+          setWorkspaceMembers(
+            membersSnapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+          );
+          setCloudStatus('Synced');
+        }
+      } catch (error) {
+        console.error('Workspace load failed:', error);
+        if (!cancelled) {
+          setCloudStatus('Offline');
+          notify(
+            'Workspace sync failed. Check Firestore rules and membership.',
+            true
+          );
+        }
+      } finally {
+        if (!cancelled) setCloudReady(true);
       }
-
-      if (!cancelled) setCloudStatus('Synced');
-    } catch (error) {
-      console.error('Workspace load failed:', error);
-
-      if (!cancelled) {
-        setCloudStatus('Offline');
-        notify('Cloud connection failed. Check your connection and Firestore rules.', true);
-      }
-    } finally {
-      if (!cancelled) setCloudReady(true);
     }
-  }
 
-  loadWorkspace();
+    loadWorkspace();
+    return () => { cancelled = true; };
+  }, [user.uid, workspaceId]);
 
-  return () => {
-    cancelled = true;
+
+  const createTeamInvitation = async (emailInput) => {
+    const email = emailInput.trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      notify('Enter a valid email address.', true);
+      return;
+    }
+
+    const currentMember = workspaceMembers.find(item => item.id === user.uid);
+    if (!currentMember || currentMember.role !== 'owner') {
+      notify('Only the workspace owner can invite members.', true);
+      return;
+    }
+
+    if (email === (user.email || '').toLowerCase()) {
+      notify('You are already a member of this workspace.', true);
+      return;
+    }
+
+    setTeamBusy(true);
+    try {
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      const bytes = crypto.getRandomValues(new Uint8Array(10));
+      const code = Array.from(bytes, byte => alphabet[byte % alphabet.length]).join('');
+
+      await setDoc(doc(db, 'inviteCodes', code), {
+        workspaceId,
+        email,
+        createdBy: user.uid,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      });
+
+      setInviteCodeDisplay(code);
+      notify('Invitation code created. Share it with the invited email address.');
+    } catch (error) {
+      console.error('Invitation creation failed:', error);
+      notify('Could not create the invitation. Check Firestore rules.', true);
+    } finally {
+      setTeamBusy(false);
+    }
   };
-}, [user.uid]);
 
+  const acceptTeamInvitation = async (codeInput) => {
+    const code = codeInput.trim().toUpperCase();
+    if (!/^[A-Z0-9]{10}$/.test(code)) {
+      notify('Enter a valid 10-character invitation code.', true);
+      return;
+    }
+
+    if (!user.email) {
+      notify('Your signed-in account needs an email address.', true);
+      return;
+    }
+
+    setTeamBusy(true);
+    try {
+      const inviteRef = doc(db, 'inviteCodes', code);
+      const inviteSnapshot = await getDoc(inviteRef);
+
+      if (!inviteSnapshot.exists()) {
+        throw new Error('Invitation not found.');
+      }
+
+      const invitation = inviteSnapshot.data();
+      if (invitation.status !== 'pending') {
+        throw new Error('This invitation has already been used.');
+      }
+      if (invitation.email !== user.email.toLowerCase()) {
+        throw new Error('Sign in with the email address this invitation was sent to.');
+      }
+      if (!invitation.workspaceId || invitation.workspaceId === user.uid) {
+        throw new Error('This invitation has an invalid workspace.');
+      }
+
+      const batch = writeBatch(db);
+      batch.set(
+        doc(db, 'workspaces', invitation.workspaceId, 'members', user.uid),
+        {
+          uid: user.uid,
+          email: user.email.toLowerCase(),
+          displayName: user.displayName || user.email,
+          role: 'member',
+          inviteCode: code,
+          joinedAt: new Date().toISOString()
+        }
+      );
+      batch.update(inviteRef, {
+        status: 'accepted',
+        acceptedBy: user.uid,
+        acceptedAt: new Date().toISOString()
+      });
+      await batch.commit();
+
+      localStorage.setItem(
+        localKey(user.uid, 'workspaceId'),
+        JSON.stringify(invitation.workspaceId)
+      );
+      setWorkspaceId(invitation.workspaceId);
+      setActive('team');
+      setInviteCodeDisplay('');
+      notify('Invitation accepted. Loading the shared workspace.');
+    } catch (error) {
+      console.error('Invitation acceptance failed:', error);
+      notify(error.message || 'Could not accept invitation. Check Firestore rules.', true);
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+
+  const leaveTeamWorkspace = async () => {
+    if (workspaceId === user.uid) {
+      notify('You are already in your personal workspace.', true);
+      return;
+    }
+
+    const me = workspaceMembers.find(member => member.id === user.uid);
+    if (me?.role === 'owner') {
+      notify('Owners must delete the shared workspace or transfer ownership before leaving.', true);
+      return;
+    }
+
+    if (!window.confirm('Leave this shared workspace? Your personal workspace will remain intact.')) return;
+
+    setTeamBusy(true);
+    try {
+      await deleteDoc(doc(db, 'workspaces', workspaceId, 'members', user.uid));
+      localStorage.setItem(localKey(user.uid, 'workspaceId'), JSON.stringify(user.uid));
+      setWorkspaceMembers([]);
+      setWorkspaceId(user.uid);
+      setActive('overview');
+      notify('You left the shared workspace.');
+    } catch (error) {
+      console.error('Leave workspace failed:', error);
+      notify('Could not leave the workspace. Check Firestore rules.', true);
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const deleteTeamWorkspace = async () => {
+    if (workspaceId === user.uid) {
+      notify('Your personal workspace cannot be deleted here.', true);
+      return;
+    }
+
+    const me = workspaceMembers.find(member => member.id === user.uid);
+    if (me?.role !== 'owner') {
+      notify('Only the workspace owner can delete it.', true);
+      return;
+    }
+
+    if (!window.confirm('PERMANENTLY DELETE this shared workspace, its shared tasks, members, and invitation codes? Personal workspace backups and Firebase accounts will not be deleted. This cannot be undone.')) return;
+
+    setTeamBusy(true);
+    try {
+      // Remove invitations while owner permissions are still available.
+      const invites = await getDocs(query(
+        collection(db, 'inviteCodes'),
+        where('workspaceId', '==', workspaceId)
+      ));
+
+      for (let i = 0; i < invites.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        invites.docs.slice(i, i + 400).forEach(item => batch.delete(item.ref));
+        await batch.commit();
+      }
+
+      // Delete shared data before removing memberships.
+      await deleteDoc(doc(db, 'workspaces', workspaceId, 'data', 'main'));
+
+      const memberDocs = await getDocs(
+        collection(db, 'workspaces', workspaceId, 'members')
+      );
+      const others = memberDocs.docs.filter(item => item.id !== user.uid);
+
+      for (let i = 0; i < others.length; i += 400) {
+        const batch = writeBatch(db);
+        others.slice(i, i + 400).forEach(item => batch.delete(item.ref));
+        await batch.commit();
+      }
+
+      // Remove the owner last, then remove workspace metadata.
+      await deleteDoc(doc(db, 'workspaces', workspaceId, 'members', user.uid));
+      await deleteDoc(doc(db, 'workspaces', workspaceId));
+
+      localStorage.setItem(localKey(user.uid, 'workspaceId'), JSON.stringify(user.uid));
+      setWorkspaceMembers([]);
+      setWorkspaceId(user.uid);
+      setActive('overview');
+      notify('Shared workspace deleted.');
+    } catch (error) {
+      console.error('Delete workspace failed:', error);
+      notify('Workspace deletion did not finish. Check Firestore rules and console errors before retrying.', true);
+    } finally {
+      setTeamBusy(false);
+    }
+  };
 
   const persist = async (p, t, a) => {
     try {
@@ -221,7 +483,7 @@ useEffect(() => {
 
     try {
       await setDoc(
-        doc(db, 'users', user.uid, 'workspace', 'data'),
+        doc(db, 'workspaces', workspaceId, 'data', 'main'),
         {
           projects: p,
           tasks: t,
@@ -995,7 +1257,20 @@ useEffect(() => {
             />
           )}
 
-          {active === 'team' && <Team tasks={tasks} />}
+          {active === 'team' && (
+            <Team
+              tasks={tasks}
+              user={user}
+              workspaceId={workspaceId}
+              workspaceMembers={workspaceMembers}
+              inviteCodeDisplay={inviteCodeDisplay}
+              busy={teamBusy}
+              onCreateInvite={createTeamInvitation}
+              onAcceptInvite={acceptTeamInvitation}
+              onLeaveWorkspace={leaveTeamWorkspace}
+              onDeleteWorkspace={deleteTeamWorkspace}
+            />
+          )}
           {active === 'activity' && <ActivityPage activity={activity} />}
           {active === 'analytics' && <Analytics projects={projects} tasks={tasks} />}
 
