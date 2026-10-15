@@ -1,5 +1,13 @@
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth, db } from './firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+} from 'firebase/firestore';
+import AuthScreen from './AuthScreen';
 import {
   Activity, ArrowDownRight, ArrowUpRight, Bell, CalendarDays, Check,
   ChevronDown, CircleHelp, Clock3, Command, Filter, FolderKanban, Gauge,
@@ -72,11 +80,12 @@ const read = (key, fallback) => {
   }
 };
 
-function App() {
+function Dashboard({ user }) {
   const [active, setActive] = useState('overview');
   const [projects, setProjects] = useState(() => read('ss-projects', seedProjects));
   const [tasks, setTasks] = useState(() => read('ss-tasks', seedTasks));
   const [activity, setActivity] = useState(() => read('ss-activity', initialActivity));
+  const [cloudReady, setCloudReady] = useState(false);
   const [query, setQuery] = useState('');
   const [projectFilter, setProjectFilter] = useState('All projects');
   const [modal, setModal] = useState(null);
@@ -97,13 +106,28 @@ function App() {
     tag: 'Course project',
   });
 
-  const persist = (p, t, a) => {
+  const persist = async (p, t, a) => {
+    // Keep a local fallback, while also saving this user's workspace to Firestore.
     try {
       localStorage.setItem('ss-projects', JSON.stringify(p));
       localStorage.setItem('ss-tasks', JSON.stringify(t));
       localStorage.setItem('ss-activity', JSON.stringify(a));
     } catch (error) {
-      console.error('Could not save SyncSpace data:', error);
+      console.error('Could not save SyncSpace data locally:', error);
+    }
+
+    if (!user?.uid) return;
+
+    try {
+      await setDoc(doc(db, 'users', user.uid, 'workspace', 'data'), {
+        projects: p,
+        tasks: t,
+        activity: a,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch (error) {
+      console.error('Could not save SyncSpace data to Firestore:', error);
+      notify('Saved in this browser, but cloud save failed. Check Firestore rules and connection.');
     }
   };
 
@@ -111,6 +135,61 @@ function App() {
     setToast(message);
     window.setTimeout(() => setToast(''), 2600);
   };
+
+  // Load this signed-in user's cloud data. On first sign-in, migrate existing
+  // browser data to Firestore so the current demo workspace is not discarded.
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadWorkspace = async () => {
+      setCloudReady(false);
+      try {
+        const workspaceRef = doc(db, 'users', user.uid, 'workspace', 'data');
+        const snapshot = await getDoc(workspaceRef);
+        if (cancelled) return;
+
+        if (snapshot.exists()) {
+          const cloudData = snapshot.data();
+          const nextProjects = Array.isArray(cloudData.projects) ? cloudData.projects : seedProjects;
+          const nextTasks = Array.isArray(cloudData.tasks) ? cloudData.tasks : seedTasks;
+          const nextActivity = Array.isArray(cloudData.activity) ? cloudData.activity : initialActivity;
+          setProjects(nextProjects);
+          setTasks(nextTasks);
+          setActivity(nextActivity);
+          try {
+            localStorage.setItem('ss-projects', JSON.stringify(nextProjects));
+            localStorage.setItem('ss-tasks', JSON.stringify(nextTasks));
+            localStorage.setItem('ss-activity', JSON.stringify(nextActivity));
+          } catch (storageError) {
+            console.warn('Could not update local cache:', storageError);
+          }
+        } else {
+          const localProjects = read('ss-projects', seedProjects);
+          const localTasks = read('ss-tasks', seedTasks);
+          const localActivity = read('ss-activity', initialActivity);
+          setProjects(localProjects);
+          setTasks(localTasks);
+          setActivity(localActivity);
+          await setDoc(workspaceRef, {
+            projects: localProjects,
+            tasks: localTasks,
+            activity: localActivity,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      } catch (error) {
+        console.error('Could not load SyncSpace cloud workspace:', error);
+        if (!cancelled) {
+          notify('Could not connect to cloud storage. Your browser data is still available.');
+        }
+      } finally {
+        if (!cancelled) setCloudReady(true);
+      }
+    };
+
+    if (user?.uid) loadWorkspace();
+    return () => { cancelled = true; };
+  }, [user?.uid]);
 
   const log = (text, color = 'purple') => {
     const nextActivity = [
@@ -394,6 +473,10 @@ function App() {
     setWorkspaceOpen(false);
   };
 
+  if (!cloudReady) {
+    return <p style={{ padding: 24 }}>Loading your SyncSpace cloud workspace...</p>;
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
@@ -551,7 +634,7 @@ function App() {
               <div className="avatar avatar-purple">MM</div>
               <div className="profile-text">
                 <b>Maitri More</b>
-                <span>Demo account</span>
+                <span>{user?.email || 'Signed-in account'}</span>
               </div>
               <MoreHorizontal size={17} />
             </button>
@@ -560,7 +643,7 @@ function App() {
               <div className="action-dropdown profile-dropdown">
                 <div className="dropdown-heading">
                   <b>Maitri More</b>
-                  <span>Demo account · Local only</span>
+                  <span>{user?.email || 'Signed-in account'} · Cloud sync</span>
                 </div>
                 <button
                   type="button"
@@ -576,9 +659,15 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setProfileOpen(false);
-                    notify('Authentication is not connected in this demo.');
+                  onClick={async () => {
+                      setProfileOpen(false);
+                      try {
+                        await signOut(auth);
+                        notify('Signed out successfully');
+                      } catch (error) {
+                        notify('Could not sign out. Please try again.');
+                        console.error(error);
+                      }
                   }}
                 >
                   <LogOut size={15} /> Sign out
@@ -1387,7 +1476,7 @@ function Tasks({ tasks, projects, projectFilter, setProjectFilter, onMove, onNew
         })}
       </div>
 
-      <p className="board-hint"><CircleHelp size={14} /> Tip: use a task card's menu to delete it or move it through the workflow. Changes are saved in this browser.</p>
+      <p className="board-hint"><CircleHelp size={14} /> Tip: use a task card's menu to delete it or move it through the workflow. Changes sync to your account.</p>
 
       <style>{`
         .task-actions-dropdown {
@@ -1493,7 +1582,7 @@ function Analytics({ projects, tasks }) {
         </section>
       </div>
 
-      <div className="notice-strip"><Sparkles size={17} /><div><b>Demo analytics</b><p>These insights are calculated from the tasks in this browser. Connect a shared database to make team-wide reporting available across devices.</p></div></div>
+      <div className="notice-strip"><Sparkles size={17} /><div><b>Demo analytics</b><p>These insights are calculated from your Firestore workspace data. Signed-in access is account-specific; shared team workspaces require membership and collaboration features.</p></div></div>
     </>
   );
 }
@@ -1504,14 +1593,14 @@ function SettingsPage({ onReset }) {
       <section className="panel settings-panel">
         <div className="panel-heading"><div><h2>Workspace settings</h2><p>Simple settings for your demo environment.</p></div></div>
         <div className="setting-row"><div><b>Workspace name</b><p>The name shown in the sidebar.</p></div><span className="setting-value">UGDX Workspace</span></div>
-        <div className="setting-row"><div><b>Account mode</b><p>Authentication is not connected yet.</p></div><span className="setting-pill">Demo access</span></div>
-        <div className="setting-row"><div><b>Data storage</b><p>Changes are saved locally in this browser.</p></div><span className="setting-pill green-pill">Local storage</span></div>
-        <div className="setting-row"><div><b>Cloud integrations</b><p>Firebase, Azure and Zoho are not connected yet.</p></div><span className="setting-pill">Not connected</span></div>
+        <div className="setting-row"><div><b>Account mode</b><p>You are signed in with Firebase Authentication.</p></div><span className="setting-pill green-pill">Authenticated</span></div>
+        <div className="setting-row"><div><b>Data storage</b><p>Your workspace is saved to Firestore and cached in this browser.</p></div><span className="setting-pill green-pill">Firestore</span></div>
+        <div className="setting-row"><div><b>Cloud storage</b><p>Workspace data is scoped to your signed-in account.</p></div><span className="setting-pill green-pill">Connected</span></div>
       </section>
 
       <section className="panel settings-panel">
         <div className="panel-heading"><div><h2>Demo data</h2><p>Restore the original example workspace.</p></div></div>
-        <p className="settings-body-copy">Reset projects, tasks and activity to the seeded example data. This only affects this browser.</p>
+        <p className="settings-body-copy">Reset projects, tasks and activity to the seeded example data in your cloud workspace.</p>
         <button className="button button-secondary" onClick={onReset}>Restore demo data</button>
       </section>
     </div>
@@ -1543,4 +1632,23 @@ function projectDesc(tag) {
   })[tag] || 'A shared space to plan, build, and deliver your next idea.';
 }
 
+function App() {
+  const [user, setUser] = useState(undefined);
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, setUser);
+  }, []);
+
+  if (user === undefined) {
+    return <p style={{ padding: 24 }}>Loading SyncSpace...</p>;
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  return <Dashboard user={user} />;
+}
+
 export default App;
+
