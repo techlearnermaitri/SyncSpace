@@ -93,6 +93,9 @@ function Dashboard({ user }) {
   const [deadlineReport, setDeadlineReport] = useState(null);
   const [deadlineLoading, setDeadlineLoading] = useState(false);
   const [deadlineError, setDeadlineError] = useState('');
+  const [azureHealthReport, setAzureHealthReport] = useState(null);
+  const [azureHealthLoading, setAzureHealthLoading] = useState(false);
+  const [azureHealthError, setAzureHealthError] = useState('');
 
   const notify = (message, isError = false) => {
     setToast(message);
@@ -399,6 +402,47 @@ function Dashboard({ user }) {
     }
   };
 
+  const analyzeProjectHealth = async () => {
+    setAzureHealthLoading(true);
+    setAzureHealthError('');
+
+    try {
+      const response = await fetch('/api/project-health', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tasks: tasks.map(task => ({
+            id: task.id,
+            title: task.title,
+            project: task.project,
+            priority: task.priority,
+            dueDate: task.due,
+            status: task.status === 'done'
+              ? 'Done'
+              : task.status === 'progress'
+                ? 'In Progress'
+                : 'To Do'
+          }))
+        })
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || `Azure API error: ${response.status}`);
+      }
+
+      setAzureHealthReport(result);
+      notify('Azure project health analysis completed');
+    } catch (error) {
+      console.error('Azure project health failed:', error);
+      setAzureHealthError(error.message || 'Azure project health analysis failed.');
+    } finally {
+      setAzureHealthLoading(false);
+    }
+  };
+
+
   const pageTitles = {
     overview: ['Your workspace, in focus', `Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}`, 'Here’s what’s happening across your workspace.'],
     projects: ['PLAN & BUILD', 'Your projects', 'Keep every project moving in the right direction.'],
@@ -559,7 +603,19 @@ function Dashboard({ user }) {
           {active === 'team' && <Team tasks={tasks} />}
           {active === 'activity' && <ActivityPage activity={activity} />}
           {active === 'analytics' && <Analytics projects={projects} tasks={tasks} />}
-          {active === 'deadline-intelligence' && <DeadlineIntelligence tasks={tasks} report={deadlineReport} loading={deadlineLoading} error={deadlineError} onAnalyze={analyzeDeadlines} />}
+          {active === 'deadline-intelligence' && (
+          <DeadlineIntelligence
+            tasks={tasks}
+            report={deadlineReport}
+            loading={deadlineLoading}
+            error={deadlineError}
+            onAnalyze={analyzeDeadlines}
+            azureReport={azureHealthReport}
+            azureLoading={azureHealthLoading}
+            azureError={azureHealthError}
+            onAzureAnalyze={analyzeProjectHealth}
+          />
+      )}
           {active === 'settings' && <SettingsPage user={user} cloudStatus={cloudStatus} onReset={restoreDemoData} />}
 
           <footer className="footer">

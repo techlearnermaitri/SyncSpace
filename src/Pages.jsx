@@ -253,7 +253,17 @@ export function Analytics({ projects, tasks }) {
   );
 }
 
-export function DeadlineIntelligence({ tasks, report, loading, error, onAnalyze }) {
+export function DeadlineIntelligence({
+  tasks,
+  report,
+  loading,
+  error,
+  onAnalyze,
+  azureReport,
+  azureLoading,
+  azureError,
+  onAzureAnalyze
+}) {
   const today = todayISO();
   const tomorrowDate = new Date();
   tomorrowDate.setDate(tomorrowDate.getDate() + 1);
@@ -324,6 +334,93 @@ export function DeadlineIntelligence({ tasks, report, loading, error, onAnalyze 
       {error && <div className="deadline-error" role="alert"><div><b>Could not complete deadline analysis</b><p>{error}</p></div><button className="button button-secondary" onClick={onAnalyze} disabled={loading}><RefreshCw size={14} /> Retry</button></div>}
 
       <div className="stats-grid deadline-stats"><StatCard label="Overdue" value={overdue.length} note="Open tasks past their due date" icon={Clock3} tone="orange" /><StatCard label="Due today" value={dueToday.length} note="Open tasks due today" icon={CalendarDays} tone="blue" /><StatCard label="Due tomorrow" value={dueTomorrow.length} note="Prepare these next" icon={Bell} tone="purple" /><StatCard label="Overall risk score" value={score === null ? '—' : `${score}/100`} note={score === null ? 'Run analysis to retrieve a score' : scoreFromService ? 'Returned by the service' : 'Calculated from task risk levels'} icon={Gauge} tone={score !== null && score >= 70 ? 'orange' : 'green'} /></div>
+      <section className="panel deadline-results azure-health-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>Azure Project Health</h2>
+            <p>Project health metrics calculated by your Azure Functions API.</p>
+          </div>
+          <span className="deadline-service-status">
+            <span />
+            Microsoft Azure
+          </span>
+        </div>
+
+        <button
+          className="button button-primary"
+          onClick={onAzureAnalyze}
+          disabled={azureLoading}
+        >
+          <Gauge size={16} />
+          {azureLoading ? 'Checking project health…' : 'Analyze project health'}
+        </button>
+
+        {azureError && (
+          <div className="deadline-error" role="alert">
+            <div>
+              <b>Azure analysis failed</b>
+              <p>{azureError}</p>
+            </div>
+            <button
+              className="button button-secondary"
+              onClick={onAzureAnalyze}
+              disabled={azureLoading}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {azureReport && (
+          <>
+            <div className="stats-grid deadline-stats">
+              <StatCard
+                label="Project health"
+                value={azureReport.health || 'Unknown'}
+                note="Azure assessment"
+                icon={Gauge}
+                tone={
+                  azureReport.health === 'Needs Attention'
+                    ? 'orange'
+                    : azureReport.health === 'At Risk'
+                      ? 'purple'
+                      : 'green'
+                }
+              />
+              <StatCard
+                label="Completion"
+                value={`${azureReport.completionPercentage ?? 0}%`}
+                note={`${azureReport.completedTasks ?? 0} completed tasks`}
+                icon={Check}
+                tone="green"
+              />
+              <StatCard
+                label="Overdue tasks"
+                value={azureReport.overdueTasks ?? 0}
+                note="Uncompleted tasks past deadline"
+                icon={AlertTriangle}
+                tone="orange"
+              />
+              <StatCard
+                label="At-risk tasks"
+                value={azureReport.atRiskTasks ?? 0}
+                note="Due within three days"
+                icon={Bell}
+                tone="purple"
+              />
+            </div>
+
+            <div className="deadline-summary">
+              <Sparkles size={16} />
+              <p>
+                {azureReport.summary ||
+                  'Azure project health analysis completed.'}
+              </p>
+            </div>
+          </>
+        )}
+      </section>
+
 
       <section className="panel deadline-results"><div className="panel-heading"><div><h2>Task-level analysis</h2><p>{report ? 'Risk labels and recommendations returned by the Cloudflare Worker.' : 'Run an analysis to load results for your workspace.'}</p></div>{report && <span className="deadline-service-status"><span /> Response received</span>}</div>
         {summary && <div className="deadline-summary"><Sparkles size={16} /><p>{summary}</p></div>}
