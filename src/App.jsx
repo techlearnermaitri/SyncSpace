@@ -138,76 +138,75 @@ function Dashboard({ user }) {
   }, []);
 
   // Load only the currently authenticated user's Firestore document.
-  useEffect(() => {
-    let cancelled = false;
 
-    async function loadWorkspace() {
-      setCloudReady(false);
-      setCloudStatus('Connecting');
+useEffect(() => {
+  let cancelled = false;
 
-      try {
-        const ref = doc(db, 'users', user.uid, 'workspace', 'data');
-        const snapshot = await getDoc(ref);
+  async function loadWorkspace() {
+    setCloudReady(false);
+    setCloudStatus('Connecting');
 
-        if (cancelled) return;
+    try {
+      const ref = doc(db, 'users', user.uid, 'workspace', 'data');
+      const snapshot = await getDoc(ref);
 
-        if (snapshot.exists()) {
-          const data = snapshot.data();
+      if (cancelled) return;
 
-          const nextProjects = Array.isArray(data.projects) ? data.projects : [];
-          const nextTasks = Array.isArray(data.tasks) ? data.tasks : [];
-          const nextActivity = Array.isArray(data.activity) ? data.activity : [];
+      // Existing accounts keep their saved data.
+      // A new account starts with an empty workspace.
+      const data = snapshot.exists() ? snapshot.data() : {};
 
-          setProjects(nextProjects);
-          setTasks(nextTasks);
-          setActivity(nextActivity);
+      const nextProjects = Array.isArray(data.projects) ? data.projects : [];
+      const nextTasks = Array.isArray(data.tasks) ? data.tasks : [];
+      const nextActivity = Array.isArray(data.activity) ? data.activity : [];
 
-          try {
-            localStorage.setItem(localKey(user.uid, 'projects'), JSON.stringify(nextProjects));
-            localStorage.setItem(localKey(user.uid, 'tasks'), JSON.stringify(nextTasks));
-            localStorage.setItem(localKey(user.uid, 'activity'), JSON.stringify(nextActivity));
-          } catch (error) {
-            console.warn('Local cache unavailable:', error);
-          }
-        } else {
-          // Migrate only this UID's cache. Never seed a new account with demo data.
-          const localProjects = readLocal(user.uid, 'projects', []);
-          const localTasks = readLocal(user.uid, 'tasks', []);
-          const localActivity = readLocal(user.uid, 'activity', []);
+      setProjects(nextProjects);
+      setTasks(nextTasks);
+      setActivity(nextActivity);
 
-          await setDoc(ref, {
-            projects: localProjects,
-            tasks: localTasks,
-            activity: localActivity,
-            updatedAt: new Date().toISOString()
-          });
+      localStorage.setItem(
+        localKey(user.uid, 'projects'),
+        JSON.stringify(nextProjects)
+      );
+      localStorage.setItem(
+        localKey(user.uid, 'tasks'),
+        JSON.stringify(nextTasks)
+      );
+      localStorage.setItem(
+        localKey(user.uid, 'activity'),
+        JSON.stringify(nextActivity)
+      );
 
-          if (cancelled) return;
-
-          setProjects(localProjects);
-          setTasks(localTasks);
-          setActivity(localActivity);
-        }
-
-        if (!cancelled) setCloudStatus('Synced');
-      } catch (error) {
-        console.error('Workspace load failed:', error);
-
-        if (!cancelled) {
-          setCloudStatus('Offline');
-          notify('Cloud connection failed. Changes may only be saved locally.', true);
-        }
-      } finally {
-        if (!cancelled) setCloudReady(true);
+      // Create the empty Firestore workspace if it doesn't exist.
+      if (!snapshot.exists()) {
+        await setDoc(ref, {
+          projects: [],
+          tasks: [],
+          activity: [],
+          updatedAt: new Date().toISOString()
+        });
       }
+
+      if (!cancelled) setCloudStatus('Synced');
+    } catch (error) {
+      console.error('Workspace load failed:', error);
+
+      if (!cancelled) {
+        setCloudStatus('Offline');
+        notify('Cloud connection failed. Check your connection and Firestore rules.', true);
+      }
+    } finally {
+      if (!cancelled) setCloudReady(true);
     }
+  }
 
-    loadWorkspace();
+  loadWorkspace();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [user.uid]);
+  return () => {
+    cancelled = true;
+  };
+}, [user.uid]);
+
 
   const persist = async (p, t, a) => {
     try {
