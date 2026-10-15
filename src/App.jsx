@@ -55,6 +55,7 @@ const nav = [
       { id: 'team', label: 'Team', icon: Users },
       { id: 'activity', label: 'Activity', icon: Activity },
       { id: 'analytics', label: 'Analytics', icon: Gauge },
+      { id: 'deadline-intelligence', label: 'Deadline Intelligence', icon: Zap },
     ],
   },
 ];
@@ -69,6 +70,13 @@ const statusMeta = {
   todo: { label: 'To do', icon: CircleDashed, cls: 'todo' },
   progress: { label: 'In progress', icon: CircleDot, cls: 'progress' },
   done: { label: 'Done', icon: CircleCheckBig, cls: 'done' },
+};
+
+const toLocalISODate = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const read = (key, fallback) => {
@@ -86,6 +94,76 @@ function Dashboard({ user }) {
   const [tasks, setTasks] = useState(() => read('ss-tasks', seedTasks));
   const [activity, setActivity] = useState(() => read('ss-activity', initialActivity));
   const [cloudReady, setCloudReady] = useState(false);
+
+
+const [deadlineReport, setDeadlineReport] = useState(null);
+const [deadlineLoading, setDeadlineLoading] = useState(false);
+const [deadlineError, setDeadlineError] = useState('');
+
+const analyzeDeadlines = async () => {
+  setDeadlineLoading(true);
+  setDeadlineError('');
+
+  try {
+    const response = await fetch(
+      'https://syncspace-60090576328.development.catalystserverless.in/server/deadline_intelligence/execute',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tasks: tasks.map((task) => ({
+            id: task.id,
+            title: task.title,
+            project: task.project,
+            priority: task.priority,
+            dueDate: task.due,
+            status:
+              task.status === 'done'
+                ? 'Done'
+                : task.status === 'progress'
+                  ? 'In Progress'
+                  : 'To Do',
+          })),
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Catalyst returned HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    // Catalyst deployments may return the function payload directly or wrap it
+    // in an "output" string/object.
+    let report = result;
+    if (typeof result.output === 'string') {
+      try {
+        report = JSON.parse(result.output);
+      } catch {
+        throw new Error('Catalyst returned an output string that was not valid JSON.');
+      }
+    } else if (result.output && typeof result.output === 'object') {
+      report = result.output;
+    }
+
+    if (report.success === false || result.success === false) {
+      throw new Error(report.error || result.error || 'Deadline analysis failed.');
+    }
+
+    setDeadlineReport(report);
+  } catch (error) {
+    console.error('Deadline intelligence error:', error);
+    setDeadlineError(
+      'Could not reach the analysis service. Check the function URL, deployment and CORS settings.'
+    );
+  } finally {
+    setDeadlineLoading(false);
+  }
+};
+
   const [query, setQuery] = useState('');
   const [projectFilter, setProjectFilter] = useState('All projects');
   const [modal, setModal] = useState(null);
@@ -98,7 +176,7 @@ function Dashboard({ user }) {
     project: 'Campus Sustainability',
     status: 'todo',
     priority: 'Medium',
-    due: '2026-10-20',
+    due: toLocalISODate(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)),
     assignee: 'Maitri',
   });
   const [newProject, setNewProject] = useState({
@@ -216,8 +294,9 @@ function Dashboard({ user }) {
 
   const done = tasks.filter((task) => task.status === 'done').length;
   const activeTasks = tasks.filter((task) => task.status !== 'done').length;
+  const todayISO = toLocalISODate();
   const overdue = tasks.filter(
-    (task) => task.status !== 'done' && task.due < '2026-10-14'
+    (task) => task.status !== 'done' && task.due && task.due < todayISO
   ).length;
 
   const moveTask = (task, status) => {
@@ -362,7 +441,7 @@ function Dashboard({ user }) {
       project: selectedProject,
       status: 'todo',
       priority: 'Medium',
-      due: '2026-10-20',
+      due: toLocalISODate(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)),
       assignee: 'Maitri',
     });
 
@@ -453,6 +532,7 @@ function Dashboard({ user }) {
     team: 'Your team',
     activity: 'Activity',
     analytics: 'Analytics',
+    'deadline-intelligence': 'Deadline Intelligence',
     settings: 'Settings',
   }[active] || 'Workspace';
 
@@ -463,6 +543,7 @@ function Dashboard({ user }) {
     team: 'The people building great things together.',
     activity: 'A live-ish trail of your team’s progress.',
     analytics: 'Understand progress at a glance.',
+    'deadline-intelligence': 'Spot deadline risks early and decide what needs attention first.',
     settings: 'Manage your workspace preferences.',
   }[active];
 
@@ -826,6 +907,16 @@ function Dashboard({ user }) {
             <Analytics projects={projects} tasks={tasks} />
           )}
 
+          {active === 'deadline-intelligence' && (
+            <DeadlineIntelligence
+              tasks={tasks}
+              report={deadlineReport}
+              loading={deadlineLoading}
+              error={deadlineError}
+              onAnalyze={analyzeDeadlines}
+            />
+          )}
+
           {active === 'settings' && (
             <SettingsPage onReset={restoreDemoData} />
           )}
@@ -835,7 +926,7 @@ function Dashboard({ user }) {
             <span>
               <span className="footer-dot" /> Demo workspace
               <span className="footer-sep"> · </span>
-              Data saved in this browser
+              Firebase Auth · Firestore · Zoho Catalyst
             </span>
           </footer>
         </div>
@@ -1170,6 +1261,242 @@ function Dashboard({ user }) {
           border: 0;
           font: inherit;
         }
+      `}</style>
+    </div>
+  );
+}
+
+function DeadlineIntelligence({ tasks, report, loading, error, onAnalyze }) {
+  const today = toLocalISODate();
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = toLocalISODate(tomorrowDate);
+
+  const openTasks = tasks.filter((task) => task.status !== 'done');
+  const overdueTasks = openTasks.filter((task) => task.due && task.due < today);
+  const dueTodayTasks = openTasks.filter((task) => task.due === today);
+  const dueTomorrowTasks = openTasks.filter((task) => task.due === tomorrow);
+
+  const returnedTasks = report
+    ? (
+        Array.isArray(report.tasks) ? report.tasks
+          : Array.isArray(report.results) ? report.results
+            : Array.isArray(report.analyses) ? report.analyses
+              : Array.isArray(report.taskAnalysis) ? report.taskAnalysis
+                : Array.isArray(report.items) ? report.items
+                  : []
+      )
+    : [];
+
+  const findRisk = (task) => returnedTasks.find((item) =>
+    String(item.id ?? item.taskId ?? item.task_id ?? '') === String(task.id) ||
+    String(item.title ?? item.taskTitle ?? item.task_title ?? '').trim().toLowerCase() ===
+      String(task.title ?? '').trim().toLowerCase()
+  );
+
+  const riskLabel = (analysis) => {
+    const raw = analysis?.riskLevel ?? analysis?.risk_level ?? analysis?.risk ??
+      analysis?.label ?? analysis?.severity ?? analysis?.status;
+    if (typeof raw === 'string' && raw.trim()) return raw;
+    return 'Not provided';
+  };
+
+  const recommendationText = (analysis) => {
+    const value = analysis?.recommendation ?? analysis?.recommendations ??
+      analysis?.suggestion ?? analysis?.action ?? analysis?.nextStep ??
+      analysis?.next_step;
+    if (Array.isArray(value)) return value.filter(Boolean).join(' ');
+    if (typeof value === 'string' && value.trim()) return value;
+    return 'No recommendation was returned for this task.';
+  };
+
+  const scoreCandidates = [
+    report?.overallRiskScore,
+    report?.overall_risk_score,
+    report?.riskScore,
+    report?.risk_score,
+    report?.summary?.overallRiskScore,
+    report?.summary?.overall_risk_score,
+    report?.summary?.riskScore,
+    report?.summary?.risk_score,
+  ];
+  const rawScore = scoreCandidates.find((value) => value !== undefined && value !== null && value !== '');
+  const parsedScore = Number(rawScore);
+  const riskScore = rawScore !== undefined && Number.isFinite(parsedScore)
+    ? Math.max(0, Math.min(100, Math.round(parsedScore)))
+    : null;
+
+  const reportSummary = typeof report?.summary === 'string'
+    ? report.summary
+    : report?.summary?.message ?? report?.message ?? report?.overview ?? '';
+
+  const getRiskClass = (value) => {
+    const risk = String(value || '').toLowerCase();
+    if (risk.includes('critical') || risk.includes('high')) return 'risk-high';
+    if (risk.includes('medium') || risk.includes('moderate')) return 'risk-medium';
+    if (risk.includes('low') || risk.includes('safe')) return 'risk-low';
+    return 'risk-unknown';
+  };
+
+  return (
+    <div className="deadline-page">
+      <section className="panel deadline-hero">
+        <div className="deadline-hero-copy">
+          <span className="deadline-kicker"><Zap size={14} /> RULE-BASED DEADLINE ANALYSIS</span>
+          <h2>Know what could slip before it does.</h2>
+          <p>
+            Send your current workspace tasks to Zoho Catalyst to receive risk labels
+            and recommendations. This is rule-based analysis, not a machine-learning model.
+          </p>
+          <button className="button button-primary" onClick={onAnalyze} disabled={loading}>
+            <Zap size={16} />
+            {loading ? 'Analyzing workspace…' : report ? 'Run analysis again' : 'Analyze deadlines'}
+          </button>
+        </div>
+        <div className="deadline-hero-art" aria-hidden="true">
+          <div className="deadline-art-ring ring-a" />
+          <div className="deadline-art-ring ring-b" />
+          <div className="deadline-art-core"><Clock3 size={30} /></div>
+        </div>
+      </section>
+
+      {error && (
+        <div className="deadline-error" role="alert">
+          <div><b>Could not complete deadline analysis</b><p>{error}</p></div>
+          <button className="button button-secondary" onClick={onAnalyze} disabled={loading}>Retry</button>
+        </div>
+      )}
+
+      <div className="stats-grid deadline-stats">
+        <StatCard label="Overdue" value={overdueTasks.length} note="Open tasks past their due date" icon={Clock3} tone="orange" />
+        <StatCard label="Due today" value={dueTodayTasks.length} note="Open tasks due today" icon={CalendarDays} tone="blue" />
+        <StatCard label="Due tomorrow" value={dueTomorrowTasks.length} note="Prepare these next" icon={Bell} tone="purple" />
+        <StatCard
+          label="Overall risk score"
+          value={riskScore === null ? '—' : `${riskScore}/100`}
+          note={riskScore === null ? 'Run Catalyst analysis to retrieve the score' : 'Returned by the analysis service'}
+          icon={Gauge}
+          tone={riskScore !== null && riskScore >= 70 ? 'orange' : 'green'}
+        />
+      </div>
+
+      <section className="panel deadline-results">
+        <div className="panel-heading">
+          <div>
+            <h2>Task-level analysis</h2>
+            <p>{report ? 'Risk labels and recommendations returned by Zoho Catalyst.' : 'Run an analysis to load risk labels and recommendations for your workspace.'}</p>
+          </div>
+          {report && <span className="deadline-service-status"><span /> Catalyst response received</span>}
+        </div>
+
+        {reportSummary && <div className="deadline-summary"><Sparkles size={16} /><p>{reportSummary}</p></div>}
+
+        {!report && !loading && !error && (
+          <div className="deadline-empty">
+            <div className="deadline-empty-icon"><Zap size={22} /></div>
+            <h3>Your deadline report is ready to run</h3>
+            <p>Analysis uses the tasks currently loaded from your workspace. No new database or AI model is required.</p>
+            <button className="button button-primary" onClick={onAnalyze}>Analyze {tasks.length} tasks</button>
+          </div>
+        )}
+
+        {loading && (
+          <div className="deadline-loading">
+            <span className="deadline-spinner" />
+            <div><b>Analyzing your deadlines</b><p>Sending {tasks.length} tasks to Zoho Catalyst…</p></div>
+          </div>
+        )}
+
+        {report && (
+          <>
+            {returnedTasks.length === 0 ? (
+              <div className="deadline-empty compact-empty">
+                <h3>Catalyst responded, but no task-level results were recognized.</h3>
+                <p>The endpoint may use different response field names. Inspect the function's JSON response and map its task array to the table.</p>
+                <details className="deadline-raw-response">
+                  <summary>View response fields</summary>
+                  <pre>{JSON.stringify(report, null, 2)}</pre>
+                </details>
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <table className="task-table deadline-table">
+                  <thead>
+                    <tr><th>Task</th><th>Due date</th><th>Priority</th><th>Risk</th><th>Recommendation</th></tr>
+                  </thead>
+                  <tbody>
+                    {tasks.map((task) => {
+                      const analysis = findRisk(task);
+                      const label = riskLabel(analysis);
+                      return (
+                        <tr key={task.id}>
+                          <td><div className="task-cell"><div><b>{task.title}</b><small>{task.project}</small></div></div></td>
+                          <td><span className="date-text"><CalendarDays size={13} />{formatDate(task.due)}</span></td>
+                          <td><Priority value={task.priority || 'Medium'} /></td>
+                          <td><span className={`deadline-risk ${getRiskClass(label)}`}>{label}</span></td>
+                          <td className="recommendation-cell">{recommendationText(analysis)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      <div className="deadline-footnote">
+        <Building2 size={16} />
+        <span><b>Cloud flow:</b> Firebase Auth identifies the signed-in user, Firestore stores workspace data, and the React frontend sends the current task list to Zoho Catalyst for analysis.</span>
+      </div>
+
+      <style>{`
+        .deadline-page { display: flex; flex-direction: column; gap: 22px; }
+        .deadline-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; overflow: hidden; position: relative; min-height: 230px; padding: 30px; background: linear-gradient(120deg, var(--surface, #fff), rgba(200,194,255,.22)); }
+        .deadline-hero-copy { max-width: 650px; position: relative; z-index: 1; }
+        .deadline-kicker { display: inline-flex; align-items: center; gap: 7px; color: #7062cf; font-size: 11px; font-weight: 800; letter-spacing: .09em; }
+        .deadline-hero h2 { margin: 12px 0 8px; font-size: clamp(24px, 3vw, 34px); line-height: 1.15; letter-spacing: -.035em; }
+        .deadline-hero p { max-width: 600px; margin: 0 0 20px; color: var(--muted, #777783); line-height: 1.65; font-size: 13px; }
+        .deadline-hero .button:disabled, .deadline-error .button:disabled { opacity: .65; cursor: wait; }
+        .deadline-hero-art { width: 180px; height: 180px; flex: 0 0 180px; position: relative; display: grid; place-items: center; color: #7769d7; }
+        .deadline-art-ring { position: absolute; border: 1px solid rgba(119,105,215,.24); border-radius: 50%; }
+        .ring-a { width: 165px; height: 165px; }
+        .ring-b { width: 125px; height: 125px; border-style: dashed; }
+        .deadline-art-core { width: 76px; height: 76px; display: grid; place-items: center; border-radius: 25px; background: rgba(200,194,255,.55); box-shadow: 0 12px 35px rgba(119,105,215,.15); }
+        .deadline-stats { margin: 0; }
+        .deadline-results { padding: 22px; }
+        .deadline-service-status { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; padding: 7px 10px; border-radius: 999px; background: rgba(34,197,94,.10); color: #16803d; font-size: 11px; font-weight: 700; }
+        .deadline-service-status span { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; }
+        .deadline-error { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid rgba(220,38,38,.22); background: rgba(254,226,226,.45); border-radius: 14px; padding: 16px 18px; color: #991b1b; }
+        .deadline-error p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+        .deadline-summary { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; padding: 13px 15px; border-radius: 10px; background: rgba(200,194,255,.18); color: var(--text, #252536); }
+        .deadline-summary svg { flex: 0 0 auto; color: #7769d7; margin-top: 2px; }
+        .deadline-summary p { margin: 0; font-size: 13px; line-height: 1.6; }
+        .deadline-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 34px 18px; }
+        .deadline-empty h3 { margin: 12px 0 6px; font-size: 16px; }
+        .deadline-empty p { max-width: 480px; margin: 0 0 18px; color: var(--muted, #777783); font-size: 12px; line-height: 1.65; }
+        .deadline-empty-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 17px; color: #7769d7; background: rgba(200,194,255,.35); }
+        .compact-empty { padding: 20px; }
+        .deadline-loading { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 38px 15px; }
+        .deadline-loading p { margin: 4px 0 0; font-size: 12px; color: var(--muted, #777783); }
+        .deadline-spinner { width: 22px; height: 22px; border: 2px solid rgba(119,105,215,.2); border-top-color: #7769d7; border-radius: 50%; animation: deadline-spin .8s linear infinite; }
+        @keyframes deadline-spin { to { transform: rotate(360deg); } }
+        .deadline-table { min-width: 850px; }
+        .deadline-table th:last-child { min-width: 250px; }
+        .deadline-risk { display: inline-flex; border-radius: 999px; padding: 5px 9px; font-size: 11px; font-weight: 750; white-space: nowrap; }
+        .risk-high { background: #fee2e2; color: #b91c1c; }
+        .risk-medium { background: #fef3c7; color: #92400e; }
+        .risk-low { background: #dcfce7; color: #166534; }
+        .risk-unknown { background: rgba(128,128,150,.12); color: var(--muted, #777783); }
+        .recommendation-cell { min-width: 250px; max-width: 440px; white-space: normal; font-size: 12px; line-height: 1.55; color: var(--muted, #656574); }
+        .deadline-raw-response { width: 100%; text-align: left; margin-top: 10px; }
+        .deadline-raw-response summary { cursor: pointer; font-size: 12px; font-weight: 700; }
+        .deadline-raw-response pre { max-height: 280px; overflow: auto; padding: 12px; border-radius: 8px; background: rgba(128,128,150,.1); font-size: 11px; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .deadline-footnote { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border: 1px solid var(--border, #e5e7eb); border-radius: 12px; color: var(--muted, #777783); font-size: 12px; line-height: 1.6; }
+        .deadline-footnote svg { flex: 0 0 auto; color: #7769d7; margin-top: 1px; }
+        .deadline-footnote b { color: var(--text, #252536); }
+        @media (max-width: 680px) { .deadline-hero { padding: 22px; } .deadline-hero-art { display: none; } .deadline-error { align-items: flex-start; flex-direction: column; } .deadline-service-status { display: none; } .deadline-results { padding: 16px; } }
       `}</style>
     </div>
   );
@@ -1560,7 +1887,7 @@ function Analytics({ projects, tasks }) {
               <div className="bar-row" key={item.name}><div className="bar-label"><span>{item.name}</span><b>{item.value}</b></div><div className="bar-track"><div className={`bar-fill ${item.color}`} style={{ width: `${total ? item.value / total * 100 : 0}%` }} /></div></div>
             ))}
           </div>
-          <div className="chart-footnote"><span className="legend-dot dot-done" /> Based on {total} demo tasks <span className="footer-sep">·</span> Updates as tasks change</div>
+          <div className="chart-footnote"><span className="legend-dot dot-done" /> Based on {total} workspace tasks <span className="footer-sep">·</span> Updates as tasks change</div>
         </section>
 
         <section className="panel">
@@ -1591,7 +1918,7 @@ function SettingsPage({ onReset }) {
   return (
     <div className="settings-layout">
       <section className="panel settings-panel">
-        <div className="panel-heading"><div><h2>Workspace settings</h2><p>Simple settings for your demo environment.</p></div></div>
+        <div className="panel-heading"><div><h2>Workspace settings</h2><p>Settings for your SyncSpace workspace.</p></div></div>
         <div className="setting-row"><div><b>Workspace name</b><p>The name shown in the sidebar.</p></div><span className="setting-value">UGDX Workspace</span></div>
         <div className="setting-row"><div><b>Account mode</b><p>You are signed in with Firebase Authentication.</p></div><span className="setting-pill green-pill">Authenticated</span></div>
         <div className="setting-row"><div><b>Data storage</b><p>Your workspace is saved to Firestore and cached in this browser.</p></div><span className="setting-pill green-pill">Firestore</span></div>
@@ -1599,7 +1926,7 @@ function SettingsPage({ onReset }) {
       </section>
 
       <section className="panel settings-panel">
-        <div className="panel-heading"><div><h2>Demo data</h2><p>Restore the original example workspace.</p></div></div>
+        <div className="panel-heading"><div><h2>Demo data</h2><p>Restore the seeded example workspace.</p></div></div>
         <p className="settings-body-copy">Reset projects, tasks and activity to the seeded example data in your cloud workspace.</p>
         <button className="button button-secondary" onClick={onReset}>Restore demo data</button>
       </section>
