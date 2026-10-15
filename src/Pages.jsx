@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Activity, ArrowUpRight, Bell, CalendarDays, Check, ChevronDown,
+  Activity, AlertTriangle, ArrowUpRight, Bell, CalendarDays, Check, ChevronDown,
   CircleCheckBig, CircleDashed, CircleDot, CircleHelp, Clock3, Filter,
   FolderKanban, Gauge, LoaderCircle, MoreHorizontal, Plus, RefreshCw,
   Sparkles, Trash2, Users, Zap, Building2
